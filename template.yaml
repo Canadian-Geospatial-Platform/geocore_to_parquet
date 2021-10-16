@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  python3.9
+
+  Sample SAM Template for geocore_to_parquet
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 900
+
+Resources:
+  GeoCoreToParquetFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      MemorySize: 512
+      PackageType: Image
+      Events:
+        GeoCoreToParquet:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /geocore_to_parquet
+            Method: get
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./geocore_to_parquet
+      DockerTag: python3.9-v1
+
+Outputs:
+  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
+  # Find out more about other implicit resources you can reference within SAM
+  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
+  GeoCoreToParquetApi:
+    Description: "API Gateway endpoint URL for Prod stage for the geocore_to_parquet function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/geocore_to_parquet/"
+  GeoCoreToParquetFunction:
+    Description: "geocore_to_parquet Lambda Function ARN"
+    Value: !GetAtt GeoCoreToParquetFunction.Arn
+  GeoCoreToParquetFunctionIamRole:
+    Description: "Implicit IAM Role created for geocore to parquet function"
+    Value: !GetAtt GeoCoreToParquetFunctionRole.Arn
