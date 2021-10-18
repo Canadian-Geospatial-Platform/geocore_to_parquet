@@ -5,9 +5,16 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import fastparquet
+import pyspark
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType,StructField, StringType, IntegerType, LongType, ArrayType
+
+
 
 from botocore.exceptions import ClientError
 import boto3
+#import botocore
 
 def lambda_handler(event, context):
     """
@@ -45,6 +52,21 @@ def lambda_handler(event, context):
     #list all files in the s3 bucket
     filename_list = s3_filenames_paginated(region, **s3_paginate_options)
     
+    """
+    GeoCore Parquet schema using fastparquet
+    
+    spark = SparkSession.builder.master("local[1]") \
+                    .appName('SparkByExamples.com') \
+                    .getOrCreate()
+    
+    # Get geoCore schema 
+    schema = "geocore.json"
+
+    schemaFromJson = StructType.fromJson(json.loads(schema))
+    df3 = spark.createDataFrame(spark.sparkContext.parallelize(structureData),schemaFromJson)
+    df3.printSchema()
+    """
+    
     #for each json file, open for reading, add to dataframe (df), close
 	#todo exception handling
     result = []
@@ -54,31 +76,33 @@ def lambda_handler(event, context):
         json_body = json.loads(body)
         result.append(json_body)
         count += 1
-        if (count % 500) == 0:
-            print (count)
-            temp_file = "records" + str(count) + ".json"
-            temp_parquet_file = "records" + str(count) + ".parquet"
-            
-			#normalize the geocore 'features' array
-            df = pd.json_normalize(result, 'features', record_prefix='features_')
-            df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
-            
-            """debug"""
-            print(df.dtypes)
-            print(df.head())
-            
-			#convert the appended json files to parquet format
-            df.to_parquet(temp_parquet_file)
-			
-			
-			#upload the appended json file to s3
-            upload_json_stream(temp_file, bucket_parquet, str(result))
-			#upload parquet file to s3
-            upload_file(temp_parquet_file, bucket_parquet)
-            
-            #clear result and dataframe
-            result = []
-            df = pd.DataFrame(None)
+        #if (count % 500) == 0:
+
+    print (count)
+    temp_file = "records" + str(count) + ".json"
+    temp_parquet_file = "records" + str(count) + ".parquet"
+    
+	#normalize the geocore 'features' array
+    df = pd.json_normalize(result, 'features', record_prefix='features_')
+    df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
+    df = df.astype(pd.StringDtype()) #convert all columns to string
+    
+    """debug"""
+    print(df.dtypes)
+    print(df.head())
+    
+	#convert the appended json files to parquet format
+    df.to_parquet(temp_parquet_file)
+	
+	
+	#upload the appended json file to s3
+    upload_json_stream(temp_file, bucket_parquet, str(result))
+	#upload parquet file to s3
+    upload_file(temp_parquet_file, bucket_parquet)
+    
+    #clear result and dataframe
+    result = []
+    df = pd.DataFrame(None)
 			
     return {
         "statusCode": 200,
@@ -140,7 +164,6 @@ def open_s3_file(filename, **kwargs):
 
     """
     Potentially slower
-
     try:
         s3_resource = boto3.resource('s3')
         obj = s3_resource.get_object(Key=filename, Bucket=bucket_name)
