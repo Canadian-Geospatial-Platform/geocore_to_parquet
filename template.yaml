@@ -5,23 +5,23 @@ Description: >
 
   Sample SAM Template for geocore_to_parquet
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
-Globals:
-  Function:
-    Timeout: 900
-
 Resources:
   GeoCoreToParquetFunction:
     Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
       MemorySize: 512
       PackageType: Image
+      Timeout: 900
       Events:
         GeoCoreToParquet:
           Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
           Properties:
             Path: /geocore_to_parquet
             Method: get
+      Environment:
+        Variables:
+          GEOJSON_BUCKET_NAME: 'redacted'
+          PARQUET_BUCKET_NAME: 'redacted'
     Metadata:
       Dockerfile: Dockerfile
       DockerContext: ./geocore_to_parquet
