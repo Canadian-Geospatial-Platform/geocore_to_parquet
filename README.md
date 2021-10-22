@@ -17,7 +17,19 @@ sam deploy --guided
 
 # Deployment as a zip procedure
 
-Assuming a CloudFormation template is created externally..
+Zip deployment is complicated since the default python libraries exceed 250MB uncompressed size limit of a zipped AWS Lambda function. Therefore, it is needed to download the size-optimized AWS Wrangler Layer to bypass this issue.
+
+First, go to:
+```
+https://github.com/awslabs/aws-data-wrangler/releases
+```
+and select the proper python version, i.e., for python 3.7, download: awswrangler-layer-2.12.1-py3.7.zip
+
+Afterwards, copy botocore and boto3 libraries into the folder along with app.py. Cd into the folder and zip to geocore-to-parquet.zip
+
+Assuming a CloudFormation template is created externally to extract the enviropment variables.
+
+If size was not an issue, we could have run:
 
 ```
 cd geocore_to_parquet
