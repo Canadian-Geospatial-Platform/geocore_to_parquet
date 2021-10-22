@@ -3,3 +3,5 @@ numpy
 pandas
 pyarrow
 boto3
+fsspec
+s3fs

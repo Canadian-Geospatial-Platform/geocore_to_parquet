@@ -1,3 +1,4 @@
+import os
 import io
 import json
 import logging
@@ -5,28 +6,27 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-import fastparquet
-import pyspark
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType,StructField, StringType, IntegerType, LongType, ArrayType
-
-
 
 from botocore.exceptions import ClientError
-import boto3
-#import botocore
 
+import boto3
+
+GEOJSON_BUCKET_NAME = os.environ['GEOJSON_BUCKET_NAME']
+PARQUET_BUCKET_NAME = os.environ['PARQUET_BUCKET_NAME']
 def lambda_handler(event, context):
     """
     AWS Lambda Entry
     """
-    print(event)
+    #print(event)
     
     """PROD SETTINGS"""
-    bucket_parquet = "redacted"
+    bucket_parquet = PARQUET_BUCKET_NAME
     region = "ca-central-1"
-    s3_paginate_options = {'Bucket':'redacted'} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
-    s3_geocore_options = {'Bucket':'redacted'}
+    s3_paginate_options = {'Bucket':GEOJSON_BUCKET_NAME} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
+    s3_geocore_options = {'Bucket':GEOJSON_BUCKET_NAME}
+    parquet_filename = "records.parquet"
+	s3_url = "s3://" + bucket_parquet + "/" + parquet_filename
+    message = ""
 
     """ 
     Used for `sam local invoke -e payload.json` for local testing
@@ -39,20 +39,12 @@ def lambda_handler(event, context):
     """ 
     Parse query string parameters 
     """
-    
     try:
         verbose = event["queryStringParameters"]["verbose"]
     except:
         verbose = False
         
-    """
-    Convert JSON files in the input bucket to parquet
-    """
-    
-    #list all files in the s3 bucket
-    filename_list = s3_filenames_paginated(region, **s3_paginate_options)
-    
-    """
+    """todo - if and when we need to transition to a schema-based parquet file
     GeoCore Parquet schema using fastparquet
     
     spark = SparkSession.builder.master("local[1]") \
@@ -67,48 +59,74 @@ def lambda_handler(event, context):
     df3.printSchema()
     """
     
+    """
+    Convert JSON files in the input bucket to parquet
+    """
+    
+    #list all files in the s3 bucket
+    try:
+        filename_list = s3_filenames_paginated(region, **s3_paginate_options)
+    except ClientError as e:
+        print("Could not paginate the geojson bucket: %s" % e)
+        
     #for each json file, open for reading, add to dataframe (df), close
-	#todo exception handling
+    #note: if there are too many records to process, we may need to paginate 
     result = []
     count = 0
     for file in filename_list:
+        #open the s3 file
         body = open_s3_file(file, **s3_geocore_options)
+        #read the body
         json_body = json.loads(body)
+        #append to the 'result' list
         result.append(json_body)
         count += 1
-        #if (count % 500) == 0:
-
-    print (count)
-    temp_file = "records" + str(count) + ".json"
-    temp_parquet_file = "records" + str(count) + ".parquet"
+        
+    try:
+    	#normalize the geocore 'features' to pandas dataframe
+        df = pd.json_normalize(result, 'features', record_prefix='features_')
+        df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
+        df = df.astype(pd.StringDtype()) #convert all columns to string
+    except:
+        #too many things can go wrong
+        print("Some error occured normalizing the geojson record.")
     
-	#normalize the geocore 'features' array
-    df = pd.json_normalize(result, 'features', record_prefix='features_')
-    df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
-    df = df.astype(pd.StringDtype()) #convert all columns to string
-    
-    """debug"""
-    print(df.dtypes)
-    print(df.head())
-    
-	#convert the appended json files to parquet format
-    df.to_parquet(temp_parquet_file)
-	
-	
+    """start debug block"""
+    #print(count)
+    #print(df.dtypes)
+    #print(df.head())
+    #temp_file = "records" + str(count) + ".json"
 	#upload the appended json file to s3
-    upload_json_stream(temp_file, bucket_parquet, str(result))
-	#upload parquet file to s3
-    upload_file(temp_parquet_file, bucket_parquet)
+    #upload_json_stream(temp_file, bucket_parquet, str(result))
+    """end debug block"""
     
+    #convert the appended json files to parquet format and upload to s3
+    try:        
+        df.to_parquet(s3_url)
+    except ClientError as e:
+        print("Could not upload the parquet file: %s" % e)
+
     #clear result and dataframe
     result = []
     df = pd.DataFrame(None)
+    
+    message += str(count) + " records have been inserted into the parquet file '" + parquet_filename + "' located in " + bucket_parquet
+    if verbose == "true" and len(filename_list) >0:
+        message += '"uuid": ['
+        for i in filename_list:
+            #JSON format does not allow trailing commas for the last item of an array
+            #See: https://www.json.org/json-en.html
+            #Append comma if not the first element 
+            if i:
+                message += ","
+            message += "{" + i + "}"
+        message += "]"
 			
     return {
         "statusCode": 200,
         "body": json.dumps(
             {
-                "message": "todo: hello world",
+                "message": message,
             }
         ),
     }
@@ -136,7 +154,7 @@ def s3_filenames_paginated(region, **kwargs):
                 count += 1
                 filename_list.append(keyString)
     
-    print (count)
+    print("Bucket contains:", count, "files")
                 
     return filename_list
     
@@ -162,19 +180,6 @@ def open_s3_file(filename, **kwargs):
         logging.error(e)
         return False
 
-    """
-    Potentially slower
-    try:
-        s3_resource = boto3.resource('s3')
-        obj = s3_resource.get_object(Key=filename, Bucket=bucket_name)
-        file_body = obj.get()['Body'].read().decode('utf-8')
-        print (file_body)
-        return file_body
-    except ClientError as e:
-        logging.error(e)
-        return False
-    """
-
 def upload_json_stream(file_name, bucket, json_data, object_name=None):
     """Upload a json file to an S3 bucket
     :param file_name: File to upload
@@ -193,27 +198,6 @@ def upload_json_stream(file_name, bucket, json_data, object_name=None):
     try:
         s3object = s3.Object(bucket, file_name)
         response = s3object.put(Body=(bytes(json.dumps(json_data, indent=4, ensure_ascii=False).encode('utf-8'))))
-    except ClientError as e:
-        logging.error(e)
-        return False
-    return True
-    
-def upload_file(file_name, bucket, object_name=None):
-    """Upload a file to an S3 bucket
-    :param file_name: File to upload
-    :param bucket: Bucket to upload to
-    :param object_name: S3 object name. If not specified then file_name is used
-    :return: True if file was uploaded, else False
-    """
-
-    # If S3 object_name was not specified, use file_name
-    if object_name is None:
-        object_name = file_name
-
-    # Upload the file
-    s3_client = boto3.client('s3')
-    try:
-        response = s3_client.upload_file(file_name, bucket, object_name)
     except ClientError as e:
         logging.error(e)
         return False
