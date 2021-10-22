@@ -25,7 +25,7 @@ def lambda_handler(event, context):
     s3_paginate_options = {'Bucket':GEOJSON_BUCKET_NAME} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
     s3_geocore_options = {'Bucket':GEOJSON_BUCKET_NAME}
     parquet_filename = "records.parquet"
-	s3_url = "s3://" + bucket_parquet + "/" + parquet_filename
+    s3_url = "s3://" + bucket_parquet + "/" + parquet_filename
     message = ""
 
     """ 
