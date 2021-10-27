@@ -2,10 +2,8 @@ import os
 import io
 import json
 import logging
-import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+import awswrangler as wr
 
 from botocore.exceptions import ClientError
 
@@ -25,7 +23,6 @@ def lambda_handler(event, context):
     s3_paginate_options = {'Bucket':GEOJSON_BUCKET_NAME} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
     s3_geocore_options = {'Bucket':GEOJSON_BUCKET_NAME}
     parquet_filename = "records.parquet"
-    s3_url = "s3://" + bucket_parquet + "/" + parquet_filename
     message = ""
 
     """ 
@@ -81,14 +78,30 @@ def lambda_handler(event, context):
         #append to the 'result' list
         result.append(json_body)
         count += 1
+        #debug
+        #if count == 10:
+            #print (count)
+           #break
         
     try:
     	#normalize the geocore 'features' to pandas dataframe
         df = pd.json_normalize(result, 'features', record_prefix='features_')
         df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
+        
+        #todo detect if columb contains nested json format and do this transformation as a function
+        df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].apply(json.dumps, ensure_ascii=False)
+        df['features_properties_contact'] = df['features_properties_contact'].apply(json.dumps, ensure_ascii=False)
+        df['features_properties_credits'] = df['features_properties_credits'].apply(json.dumps, ensure_ascii=False)
+        df['features_properties_cited'] = df['features_properties_cited'].apply(json.dumps, ensure_ascii=False)
+        df['features_properties_distributor'] = df['features_properties_distributor'].apply(json.dumps, ensure_ascii=False)
+        df['features_properties_options'] = df['features_properties_options'].apply(json.dumps, ensure_ascii=False)
         df = df.astype(pd.StringDtype()) #convert all columns to string
+        
+        #Replace nested python 'None' values with JSON 'null'. Byproduct of json_normalize
+
     except:
         #too many things can go wrong
+        message += "Some error occured normalizing the geojson record."
         print("Some error occured normalizing the geojson record.")
     
     """start debug block"""
@@ -101,8 +114,14 @@ def lambda_handler(event, context):
     """end debug block"""
     
     #convert the appended json files to parquet format and upload to s3
-    try:        
-        df.to_parquet(s3_url)
+    try:
+        #s3_url = "s3://" + bucket_parquet + "/" + parquet_filename
+        #df.to_parquet(s3_url)
+        wr.s3.to_parquet(
+            df=df,
+            path="s3://" + bucket_parquet + "/" + parquet_filename,
+            dataset=False
+        )
     except ClientError as e:
         print("Could not upload the parquet file: %s" % e)
 
@@ -110,7 +129,9 @@ def lambda_handler(event, context):
     result = []
     df = pd.DataFrame(None)
     
-    message += str(count) + " records have been inserted into the parquet file '" + parquet_filename + "' located in " + bucket_parquet
+    if message == "":
+        message += str(count) + " records have been inserted into the parquet file '" + parquet_filename + "' in " + bucket_parquet
+        
     if verbose == "true" and len(filename_list) >0:
         message += '"uuid": ['
         for i in filename_list:
