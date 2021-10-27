@@ -81,14 +81,14 @@ def lambda_handler(event, context):
         #debug
         #if count == 10:
             #print (count)
-           #break
+            #break
         
     try:
     	#normalize the geocore 'features' to pandas dataframe
         df = pd.json_normalize(result, 'features', record_prefix='features_')
         df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
         
-        #todo detect if columb contains nested json format and do this transformation as a function
+        #todo detect if column contains nested json format and apply json.dumps as a function
         df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_contact'] = df['features_properties_contact'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_credits'] = df['features_properties_credits'].apply(json.dumps, ensure_ascii=False)
@@ -96,8 +96,6 @@ def lambda_handler(event, context):
         df['features_properties_distributor'] = df['features_properties_distributor'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_options'] = df['features_properties_options'].apply(json.dumps, ensure_ascii=False)
         df = df.astype(pd.StringDtype()) #convert all columns to string
-        
-        #Replace nested python 'None' values with JSON 'null'. Byproduct of json_normalize
 
     except:
         #too many things can go wrong
@@ -115,8 +113,6 @@ def lambda_handler(event, context):
     
     #convert the appended json files to parquet format and upload to s3
     try:
-        #s3_url = "s3://" + bucket_parquet + "/" + parquet_filename
-        #df.to_parquet(s3_url)
         wr.s3.to_parquet(
             df=df,
             path="s3://" + bucket_parquet + "/" + parquet_filename,
@@ -195,7 +191,6 @@ def open_s3_file(filename, **kwargs):
         bytes_buffer = io.BytesIO()
         client.download_fileobj(Key=filename, Fileobj=bytes_buffer, **kwargs)
         file_body = bytes_buffer.getvalue().decode() #python3, default decoding is utf-8
-        #print (file_body)
         return str(file_body)
     except ClientError as e:
         logging.error(e)
