@@ -1,9 +1,11 @@
 # geoCore_to_parquet
-An AWS Lambda, built using AWS SAM, which converts multiple JSON files hosted on AWS S3 to a single parquet file.
+An AWS Lambda, built using AWS SAM, which iterates through the geocore folder and appends each geojson file to a single parquet file (records.parquet). The parquet format is a columnar, binary data store (w/ snappy compression), meaning Athena SQL queries will only scan the specified columns of data instead of the entire JSON file. Additionally, having all of the JSON files in a single parquet file reduces the I/O overhead of Athena. Together these factors reduces time and money (amount of data scanned + number of S3 GET requests) by up to 90%.
+
+A nice parquet viewer can be found here (.exe): https://github.com/mukunku/ParquetViewer/releases
 
 This program can be triggered when a new JSON record is detected.
 
-It is hoped that this program will improve the performance of queries, i.e., searching by keywords and by uuid. 
+Creation of a lambda function called geocore-to-parquet which iterates through the geocore folder and appends each geojson file to a single parquet file . 
 
 # Deployment as an image procedure using AWS SAM
 
