@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import requests
 import logging
 import pandas as pd
 import awswrangler as wr
@@ -40,21 +41,6 @@ def lambda_handler(event, context):
         verbose = event["queryStringParameters"]["verbose"]
     except:
         verbose = False
-        
-    """todo - if and when we need to transition to a schema-based parquet file
-    GeoCore Parquet schema using fastparquet
-    
-    spark = SparkSession.builder.master("local[1]") \
-                    .appName('SparkByExamples.com') \
-                    .getOrCreate()
-    
-    # Get geoCore schema 
-    schema = "geocore.json"
-
-    schemaFromJson = StructType.fromJson(json.loads(schema))
-    df3 = spark.createDataFrame(spark.sparkContext.parallelize(structureData),schemaFromJson)
-    df3.printSchema()
-    """
     
     """
     Convert JSON files in the input bucket to parquet
@@ -79,9 +65,9 @@ def lambda_handler(event, context):
         result.append(json_body)
         count += 1
         #debug
-        #if count == 10:
-            #print (count)
-            #break
+        #if (count % 100) == 0:
+        #    print(str(count))
+        #    break
         
     try:
     	#normalize the geocore 'features' to pandas dataframe
@@ -96,6 +82,20 @@ def lambda_handler(event, context):
         df['features_properties_distributor'] = df['features_properties_distributor'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_options'] = df['features_properties_options'].apply(json.dumps, ensure_ascii=False)
         df = df.astype(pd.StringDtype()) #convert all columns to string
+        
+        #ID page currently expects "null" string instead of null type. Should be fixed on the javascript side next release
+        df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].str.replace(': null',': "null"')
+        df['features_properties_contact'] = df['features_properties_contact'].str.replace(': null',': "null"')
+        df['features_properties_credits'] = df['features_properties_credits'].str.replace(': null',': "null"')
+        df['features_properties_cited'] = df['features_properties_cited'].str.replace(': null',': "null"')
+        df['features_properties_distributor'] = df['features_properties_distributor'].str.replace(': null',': "null"')
+        df['features_properties_options'] = df['features_properties_options'].str.replace(': null',': "null"')
+        
+        #ID page needs lower case for onlineresource. Should be fixed on the javascript side next release
+        df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Name', 'onlineresource_name')
+        df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Protocol', 'onlineresource_protocol')
+        df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Description', 'onlineresource_description')
+        df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource', 'onlineresource')
 
     except:
         #too many things can go wrong
@@ -113,6 +113,7 @@ def lambda_handler(event, context):
     
     #convert the appended json files to parquet format and upload to s3
     try:
+        print("Trying to write to the S3 bucket: " + "s3://" + bucket_parquet + "/" + parquet_filename)
         wr.s3.to_parquet(
             df=df,
             path="s3://" + bucket_parquet + "/" + parquet_filename,
