@@ -41,7 +41,7 @@ def lambda_handler(event, context):
         verbose = event["queryStringParameters"]["verbose"]
     except:
         verbose = False
-    
+        
     """
     Convert JSON files in the input bucket to parquet
     """
@@ -74,7 +74,10 @@ def lambda_handler(event, context):
         df = pd.json_normalize(result, 'features', record_prefix='features_')
         df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
         
-        #todo detect if column contains nested json format and apply json.dumps as a function
+        #creates a new column called features_popularity and initializes to zero
+        df['features_popularity'] = 0
+        
+        #todo detect if columb contains nested json format and do this transformation as a function
         df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_contact'] = df['features_properties_contact'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_credits'] = df['features_properties_credits'].apply(json.dumps, ensure_ascii=False)
@@ -192,6 +195,7 @@ def open_s3_file(filename, **kwargs):
         bytes_buffer = io.BytesIO()
         client.download_fileobj(Key=filename, Fileobj=bytes_buffer, **kwargs)
         file_body = bytes_buffer.getvalue().decode() #python3, default decoding is utf-8
+        #print (file_body)
         return str(file_body)
     except ClientError as e:
         logging.error(e)
