@@ -59,6 +59,9 @@ def lambda_handler(event, context):
     for file in filename_list:
         #open the s3 file
         body = open_s3_file(file, **s3_geocore_options)
+        #check if file is empty. if so, skip this iteration
+        if body == "" or body == None:
+            continue
         #read the body
         json_body = json.loads(body)
         #append to the 'result' list
