@@ -25,6 +25,7 @@ def lambda_handler(event, context):
     s3_geocore_options = {'Bucket':GEOJSON_BUCKET_NAME}
     parquet_filename = "records.parquet"
     message = ""
+    log_level = ""
 
     """ 
     Used for `sam local invoke -e payload.json` for local testing
@@ -56,6 +57,10 @@ def lambda_handler(event, context):
     #note: if there are too many records to process, we may need to paginate 
     result = []
     count = 0
+    if log_level == "DEBUG":
+        print(pd.__version__) #print pandas version; version >1.3.0 is expected
+        filename_list = filename_list[0:500] # DEBUG -- read first 50 geojson files
+        
     for file in filename_list:
         #open the s3 file
         body = open_s3_file(file, **s3_geocore_options)
@@ -77,17 +82,24 @@ def lambda_handler(event, context):
         df = pd.json_normalize(result, 'features', record_prefix='features_')
         df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
         
-        #creates a new column called features_popularity and initializes to zero
-        df['features_popularity'] = 0
-        
-        #todo detect if columb contains nested json format and do this transformation as a function
+        #todo detect if column contains nested json format and do this transformation as a function
         df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_contact'] = df['features_properties_contact'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_credits'] = df['features_properties_credits'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_cited'] = df['features_properties_cited'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_distributor'] = df['features_properties_distributor'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_options'] = df['features_properties_options'].apply(json.dumps, ensure_ascii=False)
+        try:
+            df['features_properties_plugins'] = df['features_properties_plugins'].apply(json.dumps, ensure_ascii=False)
+        except:
+            message += "No plugins column"
+            print("No plugins column")
+
         df = df.astype(pd.StringDtype()) #convert all columns to string
+        df = df.replace({'NaN': '[]'})
+        
+        if log_level == "DEBUG":
+            print(df.dtypes)
         
         #ID page currently expects "null" string instead of null type. Should be fixed on the javascript side next release
         df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].str.replace(': null',': "null"')
@@ -102,6 +114,9 @@ def lambda_handler(event, context):
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Protocol', 'onlineresource_protocol')
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Description', 'onlineresource_description')
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource', 'onlineresource')
+		
+		#creates a new column called features_popularity and initializes to zero
+        df['features_popularity'] = 0
 
     except:
         #too many things can go wrong
@@ -109,12 +124,13 @@ def lambda_handler(event, context):
         print("Some error occured normalizing the geojson record.")
     
     """start debug block"""
-    #print(count)
-    #print(df.dtypes)
-    #print(df.head())
-    #temp_file = "records" + str(count) + ".json"
-	#upload the appended json file to s3
-    #upload_json_stream(temp_file, bucket_parquet, str(result))
+    #if log_level == "DEBUG":
+        #print(count)
+        #print(df.dtypes)
+        #print(df.head())
+        #temp_file = "records" + str(count) + ".json"
+	    #upload the appended json file to s3
+        #upload_json_stream(temp_file, bucket_parquet, str(result))
     """end debug block"""
     
     #convert the appended json files to parquet format and upload to s3
@@ -226,3 +242,9 @@ def upload_json_stream(file_name, bucket, json_data, object_name=None):
         logging.error(e)
         return False
     return True
+
+def nonesafe_dumps(obj):
+    if obj != None or not np.isnan(obj):
+        return json.dumps(obj)
+    else:
+        return np.nan
