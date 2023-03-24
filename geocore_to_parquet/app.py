@@ -12,6 +12,9 @@ import boto3
 
 GEOJSON_BUCKET_NAME = os.environ['GEOJSON_BUCKET_NAME']
 PARQUET_BUCKET_NAME = os.environ['PARQUET_BUCKET_NAME']
+DYNAMODB_TABLE      = os.environ['DYNAMODB_TABLE']
+REGION_NAME         = os.environ['REGION_NAME']
+
 def lambda_handler(event, context):
     """
     AWS Lambda Entry
@@ -20,10 +23,10 @@ def lambda_handler(event, context):
     
     """PROD SETTINGS"""
     bucket_parquet = PARQUET_BUCKET_NAME
-    region = "ca-central-1"
     s3_paginate_options = {'Bucket':GEOJSON_BUCKET_NAME} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
     s3_geocore_options = {'Bucket':GEOJSON_BUCKET_NAME}
     parquet_filename = "records.parquet"
+    region = REGION_NAME
     message = ""
     log_level = ""
 
@@ -60,7 +63,12 @@ def lambda_handler(event, context):
     if log_level == "DEBUG":
         print(pd.__version__) #print pandas version; version >1.3.0 is expected
         filename_list = filename_list[0:500] # DEBUG -- read first 50 geojson files
-        
+        for file in filename_list:
+            print(file)
+            
+    uuid_list = []
+    popularity_list = []
+
     for file in filename_list:
         #open the s3 file
         body = open_s3_file(file, **s3_geocore_options)
@@ -73,13 +81,34 @@ def lambda_handler(event, context):
         result.append(json_body)
         count += 1
         #debug
-        #if (count % 100) == 0:
-        #    print(str(count))
-        #    break
+        if log_level == "DEBUG":
+            if (count % 100) == 0:
+                print(str(count))
+                
+        #read popularity table from dynamodb
+        popularity = 0
+        uuid = file.replace('.geojson', '')
+        popularity_table = DYNAMODB_TABLE
+        try:
+            pop = query_uuid(uuid, popularity_table, region)
+            pop = replace_decimals_dynamodb(pop)
+            popularity = pop['Items'][0]['popularity']['N']
+        except IndexError as e:
+            print ("Note:", uuid, "not found.. assigning popularity to zero")
+            popularity = 0
+            
+        if log_level == "DEBUG":
+            print(uuid, " ", popularity)
+        popularity_list.append(int(popularity))
+        uuid_list.append(uuid)
+    
+    #create new dataframe with uuid and popularity
+    popularity_df = pd.DataFrame({'features_properties_id': uuid_list, 'features_popularity': popularity_list})
+        
+    df = pd.json_normalize(result, 'features', record_prefix='features_')
         
     try:
     	#normalize the geocore 'features' to pandas dataframe
-        df = pd.json_normalize(result, 'features', record_prefix='features_')
         df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
         
         #todo detect if column contains nested json format and do this transformation as a function
@@ -114,14 +143,27 @@ def lambda_handler(event, context):
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Protocol', 'onlineresource_protocol')
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Description', 'onlineresource_description')
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource', 'onlineresource')
-		
-		#creates a new column called features_popularity and initializes to zero
-        df['features_popularity'] = 0
+        
+        #modifies dates to acceptable values
+        df['features_properties_date_published_date'] = df['features_properties_date_published_date'].str.replace('Not Available; Indisponible', '2022-01-01')
+        
+        #drop existing popularity if it exists
+        #if 'features_popularity' in df.columns:
+        #    df = df.drop('features_popularity', 1)
 
     except:
         #too many things can go wrong
         message += "Some error occured normalizing the geojson record."
         print("Some error occured normalizing the geojson record.")
+
+    #merge popularity_df with df based on uuid and then sort by popularity
+    if log_level == "DEBUG":
+        print("df size: ", df.shape[0])
+        print("popularity_df size: ", popularity_df.shape[0])
+    df_final = pd.merge(df, popularity_df, on='features_properties_id')
+    df_final = df_final.sort_values(by=['features_popularity'], ascending=False)
+    if log_level == "DEBUG":
+        print("df_final size: ", df_final.shape[0])
     
     """start debug block"""
     #if log_level == "DEBUG":
@@ -137,7 +179,7 @@ def lambda_handler(event, context):
     try:
         print("Trying to write to the S3 bucket: " + "s3://" + bucket_parquet + "/" + parquet_filename)
         wr.s3.to_parquet(
-            df=df,
+            df=df_final,
             path="s3://" + bucket_parquet + "/" + parquet_filename,
             dataset=False
         )
@@ -148,8 +190,7 @@ def lambda_handler(event, context):
     result = []
     df = pd.DataFrame(None)
     
-    if message == "":
-        message += str(count) + " records have been inserted into the parquet file '" + parquet_filename + "' in " + bucket_parquet
+    message += " " + str(count) + " records have been inserted into the parquet file '" + parquet_filename + "' in " + bucket_parquet
         
     if verbose == "true" and len(filename_list) >0:
         message += '"uuid": ['
@@ -248,3 +289,40 @@ def nonesafe_dumps(obj):
         return json.dumps(obj)
     else:
         return np.nan
+
+def query_uuid(uuid, popularity_table, region):
+    
+    dynamodb_client = boto3.client('dynamodb', region_name=region)
+    
+    try:
+        response = dynamodb_client.query(
+            TableName=popularity_table,
+            KeyConditionExpression='#uuid = :uuid',
+            ExpressionAttributeNames={
+              '#uuid': 'uuid'
+            },
+            ExpressionAttributeValues={
+              ':uuid': {'S':uuid}
+            }
+        )
+    except ClientError as e:
+        print(e)
+    else:
+        return response
+        
+def replace_decimals_dynamodb(obj):
+    if isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = replace_decimals_dynamodb(obj[i])
+        return obj
+    elif isinstance(obj, dict):
+        for k in obj:
+            obj[k] = replace_decimals_dynamodb(obj[k])
+        return obj
+    elif isinstance(obj, float):
+        if obj % 1 == 0:
+            return int(obj)
+        else:
+            return float(obj)
+    else:
+        return obj
