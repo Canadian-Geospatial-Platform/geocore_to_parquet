@@ -55,7 +55,7 @@ def lambda_handler(event, context):
         filename_list = s3_filenames_paginated(region, **s3_paginate_options)
     except ClientError as e:
         print("Could not paginate the geojson bucket: %s" % e)
-        
+      
     #for each json file, open for reading, add to dataframe (df), close
     #note: if there are too many records to process, we may need to paginate 
     result = []
@@ -66,8 +66,6 @@ def lambda_handler(event, context):
         for file in filename_list:
             print(file)
             
-    uuid_list = []
-    popularity_list = []
 
     for file in filename_list:
         #open the s3 file
@@ -84,27 +82,21 @@ def lambda_handler(event, context):
         if log_level == "DEBUG":
             if (count % 100) == 0:
                 print(str(count))
-                
-        #read popularity table from dynamodb
-        popularity = 0
-        uuid = file.replace('.geojson', '')
-        popularity_table = DYNAMODB_TABLE
-        try:
-            pop = query_uuid(uuid, popularity_table, region)
-            pop = replace_decimals_dynamodb(pop)
-            popularity = pop['Items'][0]['popularity']['N']
-        except IndexError as e:
-            print ("Note:", uuid, "not found.. assigning popularity to zero")
-            popularity = 0
-            
-        if log_level == "DEBUG":
-            print(uuid, " ", popularity)
-        popularity_list.append(int(popularity))
-        uuid_list.append(uuid)
+
+    # Read all items in the popularity and similarity table from dynamodb
+    # See scan method: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/dynamodb.html#DynamoDB.Client.scan
+    popularity_df = dynamodb_table_to_df('analytics_popularity')
+    similarity_df = dynamodb_table_to_df('similarity')
     
-    #create new dataframe with uuid and popularity
-    popularity_df = pd.DataFrame({'features_properties_id': uuid_list, 'features_popularity': popularity_list})
-        
+    # Rename the popularity table 
+    popularity_df = popularity_df[['popularity', 'uuid']]
+    popularity_df.rename(columns={'popularity':'features_popularity'}, inplace = True)
+    popularity_df.rename(columns={'uuid':'features_properties_id'}, inplace = True)
+    
+    # Rename the similarity table 
+    similarity_df = similarity_df[['similarity', 'features_properties_id']]
+    similarity_df.rename(columns={'similarity':'features_similarity'}, inplace = True)
+    
     df = pd.json_normalize(result, 'features', record_prefix='features_')
         
     try:
@@ -156,15 +148,22 @@ def lambda_handler(event, context):
         message += "Some error occured normalizing the geojson record."
         print("Some error occured normalizing the geojson record.")
 
-    #merge popularity_df with df based on uuid and then sort by popularity
+    #merge popularity_df with df based on uuid and then sort by popularity, replace NaN with 0 for popularity
     if log_level == "DEBUG":
         print("df size: ", df.shape[0])
         print("popularity_df size: ", popularity_df.shape[0])
-    df_final = pd.merge(df, popularity_df, on='features_properties_id')
+    df_final = df.merge(popularity_df, on='features_properties_id', how='left')
     df_final = df_final.sort_values(by=['features_popularity'], ascending=False)
+    df_final['features_popularity'].fillna(0, inplace=True)
+    
+    #merge similarity_df with df_final based on uuid
+    df_final = df_final.merge(similarity_df, on='features_properties_id', how='left')
+    
     if log_level == "DEBUG":
         print("df_final size: ", df_final.shape[0])
-    
+        na_summary = df.isna().sum()
+        print(f'The Nas in the merged dataframe is {na_summary}')
+        
     """start debug block"""
     #if log_level == "DEBUG":
         #print(count)
@@ -326,3 +325,36 @@ def replace_decimals_dynamodb(obj):
             return float(obj)
     else:
         return obj
+
+
+def dynamodb_table_to_df(table_name):
+    """
+    his function takes the name of a DynamoDB table as input, fetches all items from the table using the scan method, 
+    and then creates a pandas DataFrame from the items. The scan operation in DynamoDB returns a maximum of 1 MB of data,
+    which can not capture all the data. To retrieve all items, we use pagination. 
+    
+    """
+    # Create a DynamoDB resource
+    dynamodb = boto3.resource('dynamodb')
+
+    # Get the table
+    table = dynamodb.Table(table_name)
+
+    # Initialize an empty list to hold all items
+    items = []
+
+    # Fetch the first page of items
+    response = table.scan()
+
+    # Add the items to our list
+    items.extend(response['Items'])
+
+    # While there are more items, fetch the next page and add its items to our list
+    while 'LastEvaluatedKey' in response:
+        response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+        items.extend(response['Items'])
+
+    # Create a pandas DataFrame from the items
+    df = pd.DataFrame(items)
+    print(f'The dynamoDB table {table_name} is load as a dataframe. The shape of the dataframe is {df.shape}')
+    return df
