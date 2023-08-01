@@ -101,7 +101,7 @@ def lambda_handler(event, context):
         
     try:
     	#normalize the geocore 'features' to pandas dataframe
-        df.columns = df.columns.str.replace(r".", "_") #parquet does not support characters other than underscore
+        df.columns = df.columns.str.replace(r".", "_", regex=False) #parquet does not support characters other than underscore
         
         #todo detect if column contains nested json format and do this transformation as a function
         df['features_properties_graphicOverview'] = df['features_properties_graphicOverview'].apply(json.dumps, ensure_ascii=False)
@@ -142,7 +142,10 @@ def lambda_handler(event, context):
         #drop existing popularity if it exists
         #if 'features_popularity' in df.columns:
         #    df = df.drop('features_popularity', 1)
-
+        #Remove the dot at the end of the strings in the 'features_properties_title_en' and 'features_properties_title_fr' columns.
+        df['features_properties_title_en'] = df['features_properties_title_en'].str.rstrip(".")
+        df['features_properties_title_fr'] = df['features_properties_title_fr'].str.rstrip(".")
+        
     except:
         #too many things can go wrong
         message += "Some error occured normalizing the geojson record."
