@@ -9,6 +9,10 @@ import awswrangler as wr
 from botocore.exceptions import ClientError
 
 import boto3
+import multiprocessing
+from lambda_multiprocessing import Pool
+import time 
+
 
 GEOJSON_BUCKET_NAME = os.environ['GEOJSON_BUCKET_NAME']
 PARQUET_BUCKET_NAME = os.environ['PARQUET_BUCKET_NAME']
@@ -20,7 +24,8 @@ def lambda_handler(event, context):
     AWS Lambda Entry
     """
     #print(event)
-    
+    # Record the start time
+    start_time = time.time()
     """PROD SETTINGS"""
     bucket_parquet = PARQUET_BUCKET_NAME
     s3_paginate_options = {'Bucket':GEOJSON_BUCKET_NAME} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
@@ -28,7 +33,7 @@ def lambda_handler(event, context):
     parquet_filename = "records.parquet"
     region = REGION_NAME
     message = ""
-    log_level = ""
+    log_level =  ""
 
     """ 
     Used for `sam local invoke -e payload.json` for local testing
@@ -59,30 +64,18 @@ def lambda_handler(event, context):
     #for each json file, open for reading, add to dataframe (df), close
     #note: if there are too many records to process, we may need to paginate 
     result = []
-    count = 0
     if log_level == "DEBUG":
         print(pd.__version__) #print pandas version; version >1.3.0 is expected
         filename_list = filename_list[0:500] # DEBUG -- read first 50 geojson files
         for file in filename_list:
             print(file)
-            
 
-    for file in filename_list:
-        #open the s3 file
-        body = open_s3_file(file, **s3_geocore_options)
-        #check if file is empty. if so, skip this iteration
-        if body == "" or body == None:
-            continue
-        #read the body
-        json_body = json.loads(body)
-        #append to the 'result' list
-        result.append(json_body)
-        count += 1
-        #debug
-        if log_level == "DEBUG":
-            if (count % 100) == 0:
-                print(str(count))
-
+    #Load json file as a list saved as result, multiprocessing 
+    with Pool() as p:
+        # for each json file, open for reading, add to dataframe (df), close
+        # note: if there are too many records to process, we may need to paginate 
+        result = p.map(process_json, filename_list)
+    
     # Read all items in the popularity and similarity table from dynamodb
     # See scan method: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/dynamodb.html#DynamoDB.Client.scan
     popularity_df = dynamodb_table_to_df('analytics_popularity')
@@ -97,6 +90,8 @@ def lambda_handler(event, context):
     similarity_df = similarity_df[['similarity', 'features_properties_id']]
     similarity_df.rename(columns={'similarity':'features_similarity'}, inplace = True)
     
+    # filter out None results
+    result = [r for r in result if r is not None]
     df = pd.json_normalize(result, 'features', record_prefix='features_')
         
     try:
@@ -142,10 +137,11 @@ def lambda_handler(event, context):
         #drop existing popularity if it exists
         #if 'features_popularity' in df.columns:
         #    df = df.drop('features_popularity', 1)
-        #Remove the dot at the end of the strings in the 'features_properties_title_en' and 'features_properties_title_fr' columns.
+
+         #Remove the dot at the end of the strings in the 'features_properties_title_en' and 'features_properties_title_fr' columns.
         df['features_properties_title_en'] = df['features_properties_title_en'].str.rstrip(".")
         df['features_properties_title_fr'] = df['features_properties_title_fr'].str.rstrip(".")
-        
+    
     except:
         #too many things can go wrong
         message += "Some error occured normalizing the geojson record."
@@ -161,7 +157,8 @@ def lambda_handler(event, context):
     
     #merge similarity_df with df_final based on uuid
     df_final = df_final.merge(similarity_df, on='features_properties_id', how='left')
-    
+    count = df_final.shape[0]
+     
     if log_level == "DEBUG":
         print("df_final size: ", df_final.shape[0])
         na_summary = df.isna().sum()
@@ -204,15 +201,23 @@ def lambda_handler(event, context):
                 message += ","
             message += "{" + i + "}"
         message += "]"
-			
+	
+	# Record the end time and calculate the total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+    #print("Total processing time: {} seconds".format(total_time))
+    
     return {
         "statusCode": 200,
         "body": json.dumps(
             {
                 "message": message,
-            }
+                "total processing time in seconds":total_time, 
+            },
+            indent=4  # add indentation for easier reading
         ),
     }
+
     
 def s3_filenames_paginated(region, **kwargs):
     """Paginates a S3 bucket to obtain file names. Pagination is needed as S3 returns 999 objects per request (hard limitation)
@@ -241,11 +246,12 @@ def s3_filenames_paginated(region, **kwargs):
                 
     return filename_list
     
-def open_s3_file(filename, **kwargs):
+def open_s3_file(filename, bucket_name):
     """Open a S3 file from bucket_name and filename and return the body as a string
     :param bucket_name: Bucket name
     :param filename: Specific file name to open
     :return: body of the file as a string
+    #Add argument bucket_name to replace *kwargs, because *kwargs will  fail the pool function from multiprocessing library 
     """
     
     """
@@ -255,7 +261,7 @@ def open_s3_file(filename, **kwargs):
     try:
         client = boto3.client('s3')
         bytes_buffer = io.BytesIO()
-        client.download_fileobj(Key=filename, Fileobj=bytes_buffer, **kwargs)
+        client.download_fileobj(Key=filename, Fileobj=bytes_buffer, Bucket=bucket_name)
         file_body = bytes_buffer.getvalue().decode() #python3, default decoding is utf-8
         #print (file_body)
         return str(file_body)
@@ -361,3 +367,15 @@ def dynamodb_table_to_df(table_name):
     df = pd.DataFrame(items)
     print(f'The dynamoDB table {table_name} is load as a dataframe. The shape of the dataframe is {df.shape}')
     return df
+    
+def process_json(file):
+    # open the s3 file
+    body = open_s3_file(file, GEOJSON_BUCKET_NAME)
+    # check if file is empty. if so, skip this iteration
+    if body == "" or body == None:
+        return None
+    # read the body
+    json_body = json.loads(body)
+    # return the body
+    return json_body
+    
