@@ -105,6 +105,8 @@ def lambda_handler(event, context):
         df['features_properties_cited'] = df['features_properties_cited'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_distributor'] = df['features_properties_distributor'].apply(json.dumps, ensure_ascii=False)
         df['features_properties_options'] = df['features_properties_options'].apply(json.dumps, ensure_ascii=False)
+        #Add eofilters 
+        df['features_properties_eoFilters'] = df['features_properties_eoFilters'].apply(json.dumps, ensure_ascii=False)
         try:
             df['features_properties_plugins'] = df['features_properties_plugins'].apply(json.dumps, ensure_ascii=False)
         except:
@@ -124,6 +126,7 @@ def lambda_handler(event, context):
         df['features_properties_cited'] = df['features_properties_cited'].str.replace(': null',': "null"')
         df['features_properties_distributor'] = df['features_properties_distributor'].str.replace(': null',': "null"')
         df['features_properties_options'] = df['features_properties_options'].str.replace(': null',': "null"')
+        df['features_properties_eoFilters'] = df['features_properties_eoFilters'].str.replace(': null',': "null"')
         
         #ID page needs lower case for onlineresource. Should be fixed on the javascript side next release
         df['features_properties_contact'] = df['features_properties_contact'].str.replace('onlineResource_Name', 'onlineresource_name')
