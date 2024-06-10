@@ -18,6 +18,7 @@ GEOJSON_BUCKET_NAME = os.environ['GEOJSON_BUCKET_NAME']
 PARQUET_BUCKET_NAME = os.environ['PARQUET_BUCKET_NAME']
 DYNAMODB_TABLE      = os.environ['DYNAMODB_TABLE']
 REGION_NAME         = os.environ['REGION_NAME']
+PARQUET_FILENAME    = os.environ['PARQUET_FILENAME']
 
 def lambda_handler(event, context):
     """
@@ -30,7 +31,7 @@ def lambda_handler(event, context):
     bucket_parquet = PARQUET_BUCKET_NAME
     s3_paginate_options = {'Bucket':GEOJSON_BUCKET_NAME} # Python dict, seperate with a comma: {'StartAfter'=2018,'Bucket'='demo'} see: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.list_objects_v2
     s3_geocore_options = {'Bucket':GEOJSON_BUCKET_NAME}
-    parquet_filename = "records.parquet"
+    parquet_filename = PARQUET_FILENAME
     region = REGION_NAME
     message = ""
     log_level =  ""
@@ -59,6 +60,7 @@ def lambda_handler(event, context):
     try:
         filename_list = s3_filenames_paginated(region, **s3_paginate_options)
     except ClientError as e:
+        print(e)
         print("Could not paginate the geojson bucket: %s" % e)
       
     #for each json file, open for reading, add to dataframe (df), close
@@ -157,6 +159,8 @@ def lambda_handler(event, context):
     df_final = df.merge(popularity_df, on='features_properties_id', how='left')
     df_final = df_final.sort_values(by=['features_popularity'], ascending=False)
     df_final['features_popularity'].fillna(0, inplace=True)
+    
+    df_final['features_properties_sourceSystemName'].fillna('cgp', inplace=True)
     
     #merge similarity_df with df_final based on uuid
     df_final = df_final.merge(similarity_df, on='features_properties_id', how='left')
