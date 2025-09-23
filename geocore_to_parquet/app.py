@@ -5,6 +5,7 @@ import requests
 import logging
 import pandas as pd
 import awswrangler as wr
+import pyarrow as pa
 
 from botocore.exceptions import ClientError
 
@@ -94,6 +95,12 @@ def lambda_handler(event, context):
     
     # filter out None results
     result = [r for r in result if r is not None]
+
+    # concatenate features from all files into one list
+    all_features = []
+    for r in result:
+        all_features.extend(r.get("features", []))
+
     df = pd.json_normalize(result, 'features', record_prefix='features_')
         
     try:
@@ -158,9 +165,29 @@ def lambda_handler(event, context):
         print("popularity_df size: ", popularity_df.shape[0])
     df_final = df.merge(popularity_df, on='features_properties_id', how='left')
     df_final = df_final.sort_values(by=['features_popularity'], ascending=False)
-    df_final['features_popularity'].fillna(0, inplace=True)
+    df_final['features_popularity'] = pd.to_numeric(df_final['features_popularity'], errors='coerce').fillna(0).astype('int64')
     
-    df_final['features_properties_sourceSystemName'].fillna('cgp', inplace=True)
+    # Convert Pandas DataFrame to PyArrow Table
+    table = pa.Table.from_pandas(df_final)
+
+    # Define Decimal(4,0) type
+    decimal_type = pa.decimal128(32, 0)
+
+    # Cast 'features_popularity' to Decimal(8,0)
+    table = table.set_column(
+        table.schema.get_field_index("features_popularity"),
+        "features_popularity",
+        table["features_popularity"].cast(decimal_type)
+    )
+
+    # Convert back to Pandas DataFrame
+    df_final = table.to_pandas()
+
+    if 'features_properties_sourceSystemName' not in df_final.columns:
+            # Ensure the column exists and fill it with 'geo-ca' for all records
+            df_final['features_properties_sourceSystemName'] = 'geo-ca'
+    else:
+        df_final['features_properties_sourceSystemName'] = df_final['features_properties_sourceSystemName'].fillna('geo-ca')
     
     #merge similarity_df with df_final based on uuid
     df_final = df_final.merge(similarity_df, on='features_properties_id', how='left')
@@ -376,13 +403,23 @@ def dynamodb_table_to_df(table_name):
     return df
     
 def process_json(file):
-    # open the s3 file
+    """Download one GeoJSON file from S3 and attach its last-modified date to each feature"""
+    # create client inside function so it's safe for multiprocessing
+    s3_client = boto3.client('s3', region_name=REGION_NAME)
+    response = s3_client.head_object(Bucket=GEOJSON_BUCKET_NAME, Key=file)
+    last_modified = response['LastModified']  # datetime
+
+    # Read the file content
     body = open_s3_file(file, GEOJSON_BUCKET_NAME)
-    # check if file is empty. if so, skip this iteration
-    if body == "" or body == None:
-        return None
-    # read the body
+    if not body:
+        return None  # skip empty files
+
     json_body = json.loads(body)
-    # return the body
-    return json_body
-    
+
+    # Inject last_modified into each feature's properties
+    for feat in json_body.get("features", []):
+        if "properties" not in feat:
+            feat["properties"] = {}
+        feat["properties"]["date_modified"] = last_modified.isoformat()
+
+    return json_body  # just return the geojson dict
